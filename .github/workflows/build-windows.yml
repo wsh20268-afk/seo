@@ -15,10 +15,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Extract source
+      - name: Rebuild source archive
         shell: pwsh
         run: |
-          Expand-Archive -Path source.zip -DestinationPath src -Force
+          $parts = Get-ChildItem build/source.b64.* | Sort-Object Name
+          if ($parts.Count -ne 6) { throw "Expected 6 source chunks, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('source-good.zip', [Convert]::FromBase64String($b64))
+          Expand-Archive -Path source-good.zip -DestinationPath src -Force
+          if (!(Test-Path src/main.py)) { throw 'main.py missing after extraction' }
+          if (!(Test-Path src/requirements.txt)) { throw 'requirements.txt missing after extraction' }
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -30,6 +36,7 @@ jobs:
         run: |
           cd src
           pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps main.py
+          if (!(Test-Path dist/GitHubContentOps.exe)) { throw 'EXE was not generated' }
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
