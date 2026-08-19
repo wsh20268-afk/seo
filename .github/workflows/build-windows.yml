@@ -15,14 +15,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Rebuild source archive
+      - name: Rebuild v1.1 source archive
         shell: pwsh
         run: |
           $parts = Get-ChildItem build/source.b64.* | Sort-Object Name
           if ($parts.Count -ne 6) { throw "Expected 6 source chunks, found $($parts.Count)" }
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
-          [IO.File]::WriteAllBytes('source-good.zip', [Convert]::FromBase64String($b64))
-          Expand-Archive -Path source-good.zip -DestinationPath src -Force
+          $sizes = $parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim().Length }
+          Write-Host "chunk sizes: $($sizes -join ',')"
+          if (($sizes[0..4] | Where-Object { $_ -ne 5510 }).Count -gt 0 -or $sizes[5] -ne 5506) { throw 'Source chunk length mismatch' }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('source-v1.1.zip', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash source-v1.1.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "source sha256=$hash"
+          if ($hash -ne 'd67959211aa6f67a900ea51836bbfafd6c2226fa8d45ea135e1e4742bb105ac3') { throw 'Source archive checksum mismatch' }
+          Expand-Archive -Path source-v1.1.zip -DestinationPath src -Force
           if (!(Test-Path src/main.py)) { throw 'main.py missing after extraction' }
           if (!(Test-Path src/requirements.txt)) { throw 'requirements.txt missing after extraction' }
       - name: Install dependencies
@@ -31,15 +37,21 @@ jobs:
           cd src
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          cd src
+          $env:QT_QPA_PLATFORM='offscreen'
+          python -c "from PySide6.QtWidgets import QApplication; from main import MainWindow; a=QApplication([]); w=MainWindow(); print(w.windowTitle(), w.tabs.count()); w.close()"
       - name: Build EXE
         shell: pwsh
         run: |
           cd src
-          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps main.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps --add-data "data;data" main.py
           if (!(Test-Path dist/GitHubContentOps.exe)) { throw 'EXE was not generated' }
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GitHubContentOps-Windows
+          name: GitHubContentOps-Windows-v1.1
           path: src/dist/GitHubContentOps.exe
           if-no-files-found: error
