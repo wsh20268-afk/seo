@@ -15,24 +15,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Extract source
+      - name: Rebuild v1.1 source archive
         shell: pwsh
         run: |
-          Expand-Archive -Path source.zip -DestinationPath src -Force
+          $b64 = (Get-Content build/source_v11.b64 -Raw).Trim()
+          [IO.File]::WriteAllBytes('source_v11.zip', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash source_v11.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "source sha256=$hash"
+          if ($hash -ne 'd67959211aa6f67a900ea51836bbfafd6c2226fa8d45ea135e1e4742bb105ac3') { throw "Source archive checksum mismatch" }
+          Expand-Archive -Path source_v11.zip -DestinationPath src -Force
       - name: Install dependencies
         shell: pwsh
         run: |
           cd src
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          cd src
+          $env:QT_QPA_PLATFORM='offscreen'
+          python -c "from PySide6.QtWidgets import QApplication; from main import MainWindow; a=QApplication([]); w=MainWindow(); print(w.windowTitle(), w.tabs.count()); w.close()"
       - name: Build EXE
         shell: pwsh
         run: |
           cd src
-          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps main.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps --add-data "data;data" main.py
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GitHubContentOps-Windows
+          name: GitHubContentOps-Windows-v1.1
           path: src/dist/GitHubContentOps.exe
           if-no-files-found: error
