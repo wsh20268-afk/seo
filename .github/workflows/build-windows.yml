@@ -1,0 +1,36 @@
+name: Build Windows EXE
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Extract source
+        shell: pwsh
+        run: |
+          Expand-Archive -Path source.zip -DestinationPath src -Force
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          cd src
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          cd src
+          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps main.py
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubContentOps-Windows
+          path: src/dist/GitHubContentOps.exe
+          if-no-files-found: error
