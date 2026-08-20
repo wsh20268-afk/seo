@@ -1,0 +1,58 @@
+name: Build Windows EXE v1.2
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rebuild v1.2 source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem build/v12/source.b64.* | Sort-Object Name
+          if ($parts.Count -ne 7) { throw "Expected 7 source chunks, found $($parts.Count)" }
+          $sizes = $parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim().Length }
+          Write-Host "chunk sizes: $($sizes -join ',')"
+          for ($i=0; $i -lt 6; $i++) { if ($sizes[$i] -ne 6000) { throw "Chunk $i length mismatch" } }
+          if ($sizes[6] -ne 2988) { throw 'Final chunk length mismatch' }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('source-v1.2.zip', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash source-v1.2.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "source sha256=$hash"
+          if ($hash -ne 'ebe8c8bd096dc6e6d4b6e8b970733b51d05f4e5d3fdaf1533c0cdf3f033944f0') { throw 'Source archive checksum mismatch' }
+          Expand-Archive -Path source-v1.2.zip -DestinationPath src -Force
+          if (!(Test-Path src/main.py)) { throw 'main.py missing after extraction' }
+          if (!(Test-Path src/app/github_oauth.py)) { throw 'github_oauth.py missing after extraction' }
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          cd src
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          cd src
+          $env:QT_QPA_PLATFORM='offscreen'
+          python -c "from PySide6.QtWidgets import QApplication; from main import MainWindow,VERSION; a=QApplication([]); w=MainWindow(); print(VERSION,w.windowTitle(),w.tabs.count()); assert VERSION=='1.2'; assert hasattr(w,'oauth_client_id'); w.close()"
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          cd src
+          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps_v1.2 --add-data "data;data" main.py
+          if (!(Test-Path dist/GitHubContentOps_v1.2.exe)) { throw 'EXE was not generated' }
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubContentOps-Windows-v1.2
+          path: src/dist/GitHubContentOps_v1.2.exe
+          if-no-files-found: error
