@@ -1,0 +1,96 @@
+name: Build GitHub Content Ops v1.3 Alpha
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v13-multi-account
+    paths:
+      - 'build/v13/**'
+      - '.github/workflows/build-windows-v13.yml'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct v1.3 source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem 'build/v13/source.b64.*' | Sort-Object Name
+          if ($parts.Count -ne 8) { throw "Expected 8 source chunks, found $($parts.Count)" }
+          $sizes = $parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim().Length }
+          for ($i=0; $i -lt 7; $i++) { if ($sizes[$i] -ne 7000) { throw "Chunk $i length mismatch: $($sizes[$i])" } }
+          if ($sizes[7] -ne 244) { throw "Final chunk length mismatch: $($sizes[7])" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $zip = Join-Path $env:RUNNER_TEMP 'GitHubContentOps_v1.3_Alpha_source.zip'
+          [IO.File]::WriteAllBytes($zip, [Convert]::FromBase64String($b64))
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $expected = '3dcb30044a9dbf56c32a4661c7f9bc010d1606cc56c447cbfe2669e1e9f6df69'
+          Write-Host "Source SHA256: $actual"
+          if ($actual -ne $expected) { throw "Source checksum mismatch" }
+          New-Item -ItemType Directory -Force 'v13-src' | Out-Null
+          Expand-Archive -Path $zip -DestinationPath 'v13-src' -Force
+          if (-not (Test-Path 'v13-src/main.py')) { throw 'main.py missing after extraction' }
+          if (-not (Test-Path 'v13-src/app/browser_manager.py')) { throw 'browser_manager.py missing after extraction' }
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r v13-src/requirements.txt
+
+      - name: Compile Python source
+        shell: pwsh
+        run: |
+          python -m compileall -q v13-src/main.py v13-src/app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'GitHubContentOps-Test'
+          Push-Location v13-src
+          python -c "from PySide6.QtWidgets import QApplication; from main import MainWindow,VERSION; app=QApplication([]); w=MainWindow(); print(VERSION,w.windowTitle(),w.tabs.count()); assert VERSION=='1.3 Alpha'; w.close(); print('GUI_SMOKE_OK')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          Push-Location v13-src
+          pyinstaller --noconfirm --clean --onefile --windowed --name GitHubContentOps_v1.3_Alpha --add-data "data;data" main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Verify EXE
+        shell: pwsh
+        run: |
+          $exe = 'v13-src/dist/GitHubContentOps_v1.3_Alpha.exe'
+          if (-not (Test-Path $exe)) { throw 'EXE was not generated' }
+          Get-Item $exe | Format-List Name,Length,LastWriteTime
+          Get-FileHash $exe -Algorithm SHA256
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubContentOps-Windows-v1.3-Alpha
+          path: v13-src/dist/GitHubContentOps_v1.3_Alpha.exe
+          if-no-files-found: error
+          retention-days: 30
